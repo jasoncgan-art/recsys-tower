@@ -1,0 +1,35 @@
+{
+  "config": {
+    "sequential": 50,
+    "concurrent": 20,
+    "k": 10,
+    "workers": 1,
+    "host": "127.0.0.1",
+    "server": "uvicorn@127.0.0.1:8123"
+  },
+  "sequential_latency_ms": {
+    "n": 50,
+    "mean": 30.6,
+    "p50": 29.11,
+    "p95": 41.32,
+    "p99": 46.17,
+    "min": 27.96,
+    "max": 48.96
+  },
+  "concurrent_latency_ms": {
+    "n": 20,
+    "mean": 574.39,
+    "p50": 617.93,
+    "p95": 661.11,
+    "p99": 661.6,
+    "throughput_req_per_s": 29.2
+  },
+  "server_metrics_after_run": {
+    "uptime_s": 3.069201946258545,
+    "health_requests": 2,
+    "recommend_requests": 75,
+    "recommend_errors": 0,
+    "recommend_mean_latency_ms": 0.777770133336162
+  },
+  "note": "localhost smoke test on CPU; latency dominated by the user-tower forward pass + exact top-k over 1,682 items."
+}

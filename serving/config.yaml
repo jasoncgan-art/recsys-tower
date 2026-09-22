@@ -1,0 +1,23 @@
+# Serving configuration for the two-tower retrieval service.
+#
+# All settings can be overridden with environment variables (env wins over
+# this file). Names follow the RECSYS_ prefix convention:
+#
+#   RECSYS_ARTIFACT_DIR   -> artifact_dir
+#   RECSYS_MODEL_PATH     -> model_path      (overrides artifact_dir/twotower.pt)
+#   RECSYS_TOP_K_DEFAULT  -> top_k_default
+#   RECSYS_TOP_K_MAX      -> top_k_max
+#   RECSYS_HOST           -> host
+#   RECSYS_PORT           -> port
+#   RECSYS_WORKERS        -> workers
+#   RECSYS_SEED           -> seed
+
+artifact_dir: "../artifacts"     # resolved relative to serving/, unless absolute
+model_path: null                 # explicit twotower.pt override (null = artifact_dir/twotower.pt)
+top_k_default: 10
+top_k_max: 100
+host: "127.0.0.1"
+port: 8000
+workers: 1
+seed: 42
+torch_threads: 1                 # deterministic serving: single-threaded matmuls
