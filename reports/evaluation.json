@@ -1,0 +1,32 @@
+{
+  "dataset": "MovieLens-100K",
+  "protocol": "per-user leave-last-positive-out",
+  "seed": 42,
+  "test_users": 942,
+  "metrics": {
+    "popularity": {
+      "Recall@10": 0.07855626326963906,
+      "Recall@50": 0.23036093418259024,
+      "NDCG@10": 0.03993221466899157
+    },
+    "mf": {
+      "Recall@10": 0.08386411889596602,
+      "Recall@50": 0.23248407643312102,
+      "NDCG@10": 0.04073867293994014
+    },
+    "two-tower": {
+      "Recall@10": 0.12420382165605096,
+      "Recall@50": 0.3354564755838641,
+      "NDCG@10": 0.06102234546971063
+    }
+  },
+  "torch": "2.14.1+cpu",
+  "python": "3.12.14",
+  "implementation": "duplicate-positive mask and genre-column fixes",
+  "training_code_sha256": "226d3f5d7983ed06ee92ed99cf2b505c42178a60b19471f7edff346573f67b14",
+  "limitations": [
+    "Single seed; no validation-based tuning or confidence intervals.",
+    "Per-user split is not a globally time-ordered simulation.",
+    "Low-rated interactions are dropped; seen mask covers training positives only."
+  ]
+}

@@ -11,6 +11,9 @@ and rank them -- exactly what a retrieval stage does at serving time.
 """
 
 import os
+import json
+import hashlib
+import platform
 import time
 
 import numpy as np
@@ -36,7 +39,7 @@ def ranks_from_scores(scores, test_i, seen):
     held-out item rank (1-based)."""
     scores = scores.clone()
     scores[seen] = float("-inf")
-    order = scores.argsort(dim=1, descending=True)          # (U, I) item indices
+    order = scores.argsort(dim=1, descending=True, stable=True)          # (U, I) item indices
     # position of the true item in each user's ranked list
     pos = (order == test_i.unsqueeze(1)).nonzero()[:, 1]   # 0-based
     return (pos + 1).cpu().numpy()
@@ -108,8 +111,21 @@ def main():
         m = results[name]
         print(f"{name:<12} {m['Recall@10']:>10.4f} {m['Recall@50']:>10.4f} "
               f"{m['NDCG@10']:>10.4f}")
+    report_dir = os.path.join(os.path.dirname(__file__), "reports")
+    os.makedirs(report_dir, exist_ok=True)
+    report = {"dataset": "MovieLens-100K", "protocol": "per-user leave-last-positive-out",
+              "seed": 42, "test_users": len(data["test_u"]), "metrics": results,
+              "torch": torch.__version__, "python": platform.python_version(),
+              "implementation": "duplicate-positive mask and genre-column fixes",
+              "training_code_sha256": hashlib.sha256(open(os.path.join(os.path.dirname(__file__), "train.py"), "rb").read()).hexdigest(),
+              "limitations": ["Single seed; no validation-based tuning or confidence intervals.",
+                              "Per-user split is not a globally time-ordered simulation.",
+                              "Low-rated interactions are dropped; seen mask covers training positives only."]}
+    with open(os.path.join(report_dir, "evaluation.json"), "w") as f:
+        json.dump(report, f, indent=2)
     print(f"\n[eval] finished in {time.time() - t0:.1f}s")
 
 
 if __name__ == "__main__":
     main()
+

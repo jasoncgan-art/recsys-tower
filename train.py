@@ -154,15 +154,17 @@ def build_pos_padded(train_u, train_i, n_users):
 def inbatch_neg_mask(bu, bi, pos_padded, n_items):
     """(B, B) bool mask: True where batch item j is a known train positive of
     batch user b (but not the pair's own positive on the diagonal)."""
-    B = len(bu)
-    col_of = torch.full((n_items,), -1, dtype=torch.long)
-    col_of[bi] = torch.arange(B)                       # item idx -> batch column
-    cand = pos_padded[bu].clamp(min=0)                 # (B, P) item indices
-    valid = (pos_padded[bu] >= 0) & (col_of[cand] >= 0)
-    rows = torch.arange(B).unsqueeze(1).expand_as(cand)
-    mask = torch.zeros(B, B, dtype=torch.bool)
-    mask[rows[valid], col_of[cand][valid]] = True
-    mask.fill_diagonal_(False)                         # keep the true positive
+    # Keep every batch occurrence of an item. A single item->column map
+    # silently drops duplicates, leaving known positives in the denominator.
+    if bu.numel() != bi.numel():
+        raise ValueError("user and item batches must have equal lengths")
+    known = torch.zeros((len(bu), n_items), dtype=torch.bool, device=bu.device)
+    candidates = pos_padded[bu]
+    rows = torch.arange(len(bu), device=bu.device).unsqueeze(1).expand_as(candidates)
+    valid = candidates >= 0
+    known[rows[valid], candidates[valid]] = True
+    mask = known[:, bi]
+    mask.fill_diagonal_(False)
     return mask
 
 
@@ -229,3 +231,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -1,194 +1,69 @@
-# Two-Tower Neural Retrieval for Movie Recommendations
+# Two-Tower Movie Retrieval: Correctness and Reproducibility
 
-A clean, from-scratch implementation of **two-tower (dual-encoder) neural retrieval** —
-the candidate-generation architecture behind YouTube, TikTok, and most large-scale
-recommenders — trained on MovieLens 100k, with classical baselines for comparison.
+A CPU-scale PyTorch retrieval project on MovieLens-100K: popularity, matrix
+factorization and a two-tower model, plus a local FastAPI service. This is a
+personal learning project, not an industrial deployment or a full ranking system.
 
-## Problem statement
+## Corrections in this revision
 
-Given a user's watch history, **retrieve** a small set of candidate movies they are
-likely to enjoy, out of the full catalog (1,682 movies). This is the *candidate
-generation* (retrieval) stage of a recommender system: recall matters more than
-perfect ordering, because a downstream ranker will re-order the candidates.
+1. **Duplicate positive items in a batch:** the original one-item/one-column map
+   skipped duplicate occurrences. The mask now excludes every known-positive
+   occurrence except each row's designated positive. Regression tests cover this.
+2. **Genre parser:** MovieLens `u.item` column 5 is `unknown`, not `Action`.
+   Genre columns now start at 6 and include the final `Western` flag.
+3. **Evaluation/serving ties:** stable sorting resolves equal scores by catalog
+   index without perturbing unequal scores.
+4. Old model results are superseded. Evaluation measures current checkpoints;
+   it no longer treats hardcoded old numbers as required targets.
 
-## Approach
-
-Three models, trained on the same temporal leave-last-out split
-(each user's last liked movie is held out as the test target):
-
-| Model | Idea |
-|---|---|
-| **Popularity** | Rank unseen movies by global popularity. The baseline every recommender must beat. |
-| **Matrix factorization** | `score(u,i) = μ + b_u + b_i + ⟨p_u, q_i⟩`, trained with mini-batch SGD on binary cross-entropy over positives + sampled negatives. |
-| **Two-tower (this repo's focus)** | A *user tower* (user-id embedding + age / gender / occupation features → MLP → L2-normalized vector) and an *item tower* (item-id embedding + genre multi-hot + year bucket → MLP → L2-normalized vector). Trained with **in-batch sampled softmax**: in a batch of B (user, item) pairs, each user's own item is the positive and the other B−1 items are negatives — with two standard corrections: a **logQ correction** (Yi et al., 2019) for the popularity bias of in-batch negatives, and **masking of false negatives** (the user's other liked items) out of the softmax denominator. |
-
-Data: MovieLens 100k, filtered to ratings ≥ 4 as positive implicit feedback
-(55,375 positives). Embeddings are 32-dim, tower output 64-dim; the whole
-pipeline trains on CPU in a few minutes. Fully deterministic — fixed seeds for
-`random`, `numpy`, and `torch`.
-
-## Retrieval vs. ranking — read this before citing this repo
-
-**This repo implements retrieval (candidate generation), not ranking.** The
-two-tower model learns user and item embeddings whose dot product approximates
-"would this user like this item", so at serving time you can pre-compute item
-vectors and run approximate nearest-neighbor search (e.g. FAISS) over millions
-of items in milliseconds. It is *not* a ranking model: it sees no cross
-features (e.g. "user watched 3 sci-fi movies this week"), no position bias
-correction, no calibration. In a production system, the two-tower retrieves
-~hundreds of candidates and a heavier ranking model (GBDT / deep cross network)
-orders them. Hiring managers know the difference — now you do too.
-
-## Results
-
-Temporal leave-last-out evaluation: for each of 942 test users (one of the 943
-users had fewer than 2 liked movies after filtering and was dropped), rank all
-movies they never interacted with and check where their held-out last-liked
-movie lands.
-(Each user has exactly one relevant item, so Recall@K is a hit rate and
-NDCG@10 = 1/log2(rank+1).)
-
-<!-- RESULTS: pasted from `python evaluate.py` output -->
-
-```
-model         Recall@10  Recall@50    NDCG@10
-----------------------------------------------
-popularity       0.0786     0.2304     0.0399
-mf               0.0839     0.2325     0.0407
-two-tower        0.1030     0.3556     0.0474
-```
-
-The two-tower wins on all three metrics — the logQ correction and
-false-negative masking in the in-batch softmax are doing real work here
-(an uncorrected first attempt scored *below* the popularity baseline).
-
-## How to run
-
-```bash
-pip install -r requirements.txt
-
-# end to end (download -> train -> evaluate -> sample recommendations)
-bash run_all.sh
-
-# ...or step by step:
-python download_data.py                 # fetch MovieLens 100k, write data/*.csv
-python train.py                         # train all three models -> artifacts/
-python train.py --models twotower       # train just the two-tower model
-python evaluate.py                      # Recall@10 / Recall@50 / NDCG@10 table
-python recommend.py --user_id 1 --top_n 10
-
-# interactive demo (optional)
-streamlit run app.py
-```
-
-`data/` and `artifacts/` are gitignored and regenerated by the scripts above —
-the repo stays light for cloning.
-
-## Serving
-
-`serving/` adds a production-style serving layer on top of the **frozen**
-trained artifacts (`artifacts/twotower.pt`, `artifacts/dataset.pt`) — nothing
-is retrained:
-
-**Architecture** — at startup the service loads the two-tower weights and
-precomputes the full item-embedding matrix once (1,682 × 64, held in memory as
-the "item index"). Each request is: one user-tower forward pass → dot product
-against the item index → exact brute-force top-k over the 1,682 items, with
-train-seen items masked out and a catalog-index tie-break so output is fully
-deterministic (fixed seed, single-threaded torch). Endpoints:
-
-| Endpoint | Description |
-|---|---|
-| `POST /recommend` | `{"user_id": 1, "k": 10}` → ranked `[{rank, item_id, title, score}]`; pydantic-validated (`k` ∈ 1..100); unknown users → `404` (cold-start unsupported) |
-| `GET /health` | service status, model name, catalog size, uptime |
-| `GET /metrics` | request counters + mean recommend latency |
-
-Settings come from `serving/config.yaml` with `RECSYS_*` env-var overrides
-(e.g. `RECSYS_MODEL_PATH`, `RECSYS_PORT`).
-
-**Offline evaluation of the served artifacts** (`python serving/offline_eval.py`
-→ `serving/eval_results.json`): same protocol as `evaluate.py`, run through
-the serving loader on all 942 test users — reproduces the two-tower README
-numbers (diffs ≈ 2e-5, i.e. float noise):
-
-```
-model         Recall@10  Recall@50    NDCG@10
-----------------------------------------------
-two-tower        0.1030     0.3556     0.0474
-```
-
-**Load test** (`python serving/load_test.py` → `serving/load_results.json`):
-localhost CPU smoke test against a real uvicorn worker, k=10 — 50 sequential
-then 20 concurrent requests, zero errors:
-
-```
-sequential (n=50):  mean 30.6 ms | p50 29.1 ms | p95 41.3 ms | p99 46.2 ms
-concurrent (n=20):  mean 574.4 ms | p50 617.9 ms | p95 661.1 ms | p99 661.6 ms | 29.2 req/s
-```
-
-(Server-side model compute averaged 0.78 ms/request; most of the ~30 ms
-client-observed sequential latency is localhost HTTP overhead. Concurrent
-latency degrades because the smoke test runs a single uvicorn worker with
-single-threaded torch — requests queue. Production would scale workers and/or
-use an ANN index.)
-
-**Quickstart:**
+## Run
 
 ```bash
 pip install -r requirements.txt -r serving/requirements.txt
-bash run_serving.sh                       # or: RECSYS_PORT=9000 bash run_serving.sh
-curl -s localhost:8000/health
-curl -s -X POST localhost:8000/recommend -H 'Content-Type: application/json' \
-     -d '{"user_id": 1, "k": 5}'
+python download_data.py
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 python train.py
+python evaluate.py
+python serving/offline_eval.py
+python -m pytest tests serving/tests -q
+python -m uvicorn serving.app:app --host 127.0.0.1 --port 8000
 ```
 
-Docker (CPU): `docker build -f serving/Dockerfile -t recsys-tower .`, then run
-with `artifacts/` bind-mounted (artifacts are intentionally not baked into the
-image — see the Dockerfile comment).
+Current measurements: [`reports/evaluation.json`](reports/evaluation.json).
+The report includes environment, training-code hash and evaluation limitations.
+Do not reuse the old 31% improvement claim without checking the new report.
 
-**Honest limitations** — this is a demo-grade serving layer, not production:
+## What the system does
 
-- Exact brute-force top-k over 1,682 items; no ANN index (FAISS/ScaNN), so it
-  won't scale to millions of items without one.
-- Retrieval only — no ranking stage, no cross features, no calibration.
-- Cold-start users are unsupported (unknown `user_id` → 404); no online
-  updates, no A/B framework, no drift monitoring.
-- The API mirrors the offline split's "seen" mask; a real service needs a live
-  interaction store.
+User ID + age bucket + gender + occupation -> user tower. Movie ID + genres + year
+bucket -> item tower. Both produce normalized embeddings. Training uses in-batch
+softmax, a sampling-frequency correction and known-positive masking. Inference
+precomputes item vectors and performs exact scoring across the small catalog.
 
-## Project structure
+Ratings >=4 are positive feedback. Each user's last positive interaction is held
+out; other positives train the models. The seen mask covers training positives,
+NOT all historical low-rated interactions. One held-out relevant movie makes
+Recall@K equivalent to hit rate in this particular evaluation.
 
-```
-download_data.py   fetch ml-100k.zip, write data/interactions.csv (+movies/users)
-dataset.py         feature encoding, temporal leave-last-out split, neg sampling
-models.py          MFWithBiases, UserTower / ItemTower / TwoTower
-train.py           train popularity / MF / two-tower  (--models to pick)
-evaluate.py        Recall@10, Recall@50, NDCG@10 comparison table
-recommend.py       top-N titles for a sample user
-app.py             optional Streamlit demo
-run_all.sh         the whole pipeline in one command
-run_serving.sh     start the FastAPI serving API (serving/)
-serving/           production-style serving layer: config.yaml-driven FastAPI
-                   app (loader + endpoints), offline_eval.py, load_test.py,
-                   Dockerfile, tests/ — serving/eval_results.json and
-                   serving/load_results.json hold the measured numbers
-```
+## Scope and remaining work
 
-## What I'd do next
+- No validation-based hyperparameter search, multi-seed estimate or uncertainty
+  interval is implemented yet. Use an independent validation split before tuning.
+- Per-user holdout does not prevent another user's later interactions from being
+  in training; this is not a global chronological deployment simulation.
+- No ANN index, second-stage ranker, online updates, monitoring or A/B experiment.
+- Only ~1,682 catalog items; this does not establish million-item scalability.
+- No cold-start fallback for unknown IDs.
 
-- **ANN serving**: pre-compute item embeddings, index with FAISS, and benchmark
-  recall/latency vs. brute force — the step that makes two-tower deployable.
-- **Hard negatives**: in-batch negatives are "easy"; mine hard negatives from
-  the current model (or use mixed negative sampling) to sharpen the boundary.
-- **Ranking stage**: train a second-stage ranker (e.g. LightGBM or a small
-  cross-network) on richer features over the retrieved candidates.
-- **Scale up**: MovieLens 1M/25M, larger embeddings, longer training, proper
-  hyperparameter tuning with a validation split.
-- **Better negatives for MF**: popularity-based or hard-negative sampling
-  instead of uniform.
+## Historical latency correction
 
-## References
+`serving/load_results.json` is marked as a legacy smoke test, not a current model
+benchmark. Its sequential p95 was 41.32 ms; its 20-request concurrent p95 was
+661.11 ms with 29.2 req/s. These must never be combined into a claim of 41 ms at
+20 concurrent requests. Sustained-load testing remains future work.
 
-- Covington et al., *Deep Neural Networks for YouTube Recommendations* (RecSys 2016)
-- Yi et al., *Sampling-Bias-Corrected Neural Modeling for Large Corpus Item Recommendations* (RecSys 2019)
-- Harper & Konstan, *The MovieLens Datasets* (TIIS 2015)
+## Interview discussion
+
+Explain how duplicate items become false negatives, how a one-column indexing
+mistake changes features, and why correctness fixes require retraining. A bug fix
+need not increase the selected test metric to be necessary. Distinguish the local
+experiment from company production experience and distinguish retrieval from ranking.

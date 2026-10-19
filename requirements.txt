@@ -1,12 +1,11 @@
-# CPU-only install (tested on Python 3.12, Linux x86_64).
-# The --index-url line points pip at PyTorch's CPU wheel index so the
-# download stays small (~200 MB instead of ~2 GB CUDA bundle).
---index-url https://download.pytorch.org/whl/cpu
---extra-index-url https://pypi.org/simple/
-
-numpy==1.26.4
-pandas==2.1.4
-torch==2.14.0+cpu
-
-# Optional: only needed for the interactive demo (streamlit run app.py).
-streamlit==1.64.0
+# Versions used for the recorded Python 3.12 Linux CPU run.
+--extra-index-url https://download.pytorch.org/whl/cpu
+numpy==2.3.5
+pandas==2.2.3
+torch==2.14.1+cpu
+fastapi==0.148.0
+uvicorn==0.54.0
+pydantic==2.14.0
+httpx==0.28.1
+pyyaml==6.0.3
+pytest==9.1.1

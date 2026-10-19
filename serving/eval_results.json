@@ -2,20 +2,10 @@
   "model": "two-tower",
   "n_test_users": 942,
   "metrics": {
-    "Recall@10": 0.103,
-    "Recall@50": 0.3556,
-    "NDCG@10": 0.0474
+    "Recall@10": 0.1242,
+    "Recall@50": 0.3355,
+    "NDCG@10": 0.061
   },
-  "expected": {
-    "Recall@10": 0.103,
-    "Recall@50": 0.3556,
-    "NDCG@10": 0.0474
-  },
-  "diff_vs_expected": {
-    "Recall@10": -2.8e-05,
-    "Recall@50": 2.6e-05,
-    "NDCG@10": -2.2e-05
-  },
-  "reproduces_expected": true,
-  "elapsed_s": 0.6
+  "implementation": "corrected genre parser and duplicate-positive mask",
+  "elapsed_s": 0.4
 }

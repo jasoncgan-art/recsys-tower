@@ -8,7 +8,9 @@ Split protocol -- temporal leave-last-out (a.k.a. leave-one-out by time):
     * Hold out the LAST interaction as the test target.
     * Everything earlier is training data.
   This mimics the real retrieval task: "given what the user liked in the past,
-  retrieve what they will like next" -- no future leakage.
+  retrieve what they will like next" within each user. Other users may have
+  training events after this user's test timestamp; this is NOT a global
+  chronological deployment simulation.
 
 Users with fewer than 2 positive interactions are dropped (can't split them).
 """
@@ -166,3 +168,4 @@ def sample_negatives(train_df, item_ids, n_neg: int, seed: int = 42):
         for m in negs:
             rows.append((u, int(m), 0))
     return pd.DataFrame(rows, columns=["user_id", "item_id", "label"])
+

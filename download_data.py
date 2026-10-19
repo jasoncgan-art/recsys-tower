@@ -45,7 +45,7 @@ def download_and_extract(url=DATA_URL, dest=RAW_DIR):
         print(f"[download] raw data already present at {dest}, skipping download")
         return
     print(f"[download] fetching {url} ...")
-    with urllib.request.urlopen(url) as resp:
+    with urllib.request.urlopen(url, timeout=60) as resp:
         blob = resp.read()
     print(f"[download] got {len(blob) / 1e6:.1f} MB, extracting ...")
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
@@ -79,7 +79,7 @@ def write_movies(raw=RAW_DIR, out=os.path.join(DATA_DIR, "movies.csv")):
             item_id = parts[0]
             title = parts[1]
             year = parts[2].split("-")[-1] if parts[2] else ""
-            genre_bits = parts[5:5 + len(GENRE_NAMES)]
+            genre_bits = parts[6:6 + len(GENRE_NAMES)]  # column 5 is the unknown flag
             genres = "|".join(
                 name for name, bit in zip(GENRE_NAMES, genre_bits) if bit == "1"
             )
@@ -108,3 +108,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

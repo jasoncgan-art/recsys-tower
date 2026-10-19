@@ -107,9 +107,9 @@ class Recommender:
         scores = (self.item_vectors @ u) / self.temperature      # (I,)
         scores = scores.to(torch.float64)
         scores[self.data["seen"][uidx]] = float("-inf")          # exclude train-seen
-        scores = scores - self._tie_break                         # deterministic ties
         k = min(max(k, 1), self.n_items)
-        top_vals, top_idx = torch.topk(scores, k, sorted=True)
+        top_idx = torch.argsort(scores, descending=True, stable=True)[:k]
+        top_vals = scores[top_idx]
         item_ids = self.data["item_ids"]
         return [
             (rank + 1, int(item_ids[i]), float(top_vals[rank]))
@@ -119,3 +119,4 @@ class Recommender:
 
 def load_recommender(settings: Settings | None = None) -> Recommender:
     return Recommender(settings or load_settings())
+

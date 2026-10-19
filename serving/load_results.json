@@ -31,5 +31,6 @@
     "recommend_errors": 0,
     "recommend_mean_latency_ms": 0.777770133336162
   },
-  "note": "localhost smoke test on CPU; latency dominated by the user-tower forward pass + exact top-k over 1,682 items."
+  "note": "localhost smoke test on CPU; latency dominated by the user-tower forward pass + exact top-k over 1,682 items.",
+  "status": "legacy smoke test before correctness fixes; not a benchmark of current code"
 }
