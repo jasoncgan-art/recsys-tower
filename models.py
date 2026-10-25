@@ -27,7 +27,9 @@
        `inbatch_neg_mask` in train.py. Matters a lot on small catalogs.
      * Even so, in-batch negatives are still "easy" (random) negatives.
        Production systems additionally mine *hard* negatives from the
-       current model; we skip that here for clarity.
+       current model; this repo skips that by default for clarity, and
+       train.py --hard-negatives adds it as an opt-in v2 round
+       (off by default, so default training is unchanged).
 """
 
 import torch

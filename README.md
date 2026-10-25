@@ -22,6 +22,7 @@ personal learning project, not an industrial deployment or a full ranking system
 pip install -r requirements.txt -r serving/requirements.txt
 python download_data.py
 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 python train.py
+python train.py --models twotower --hard-negatives  # opt-in v2 hard-negative round
 python evaluate.py
 python serving/offline_eval.py
 python -m pytest tests serving/tests -q
@@ -31,6 +32,42 @@ python -m uvicorn serving.app:app --host 127.0.0.1 --port 8000
 Current measurements: [`reports/evaluation.json`](reports/evaluation.json).
 The report includes environment, training-code hash and evaluation limitations.
 Do not reuse the old 31% improvement claim without checking the new report.
+
+## v2: hard negative mining (opt-in, off by default)
+
+The default two-tower uses random in-batch negatives only. The v2
+flag adds a second round, in `train.py`:
+
+1. **Train normally** — in-batch softmax + `neg_mask` + `logQ`, exactly as above.
+2. **Mine** — score every item with the trained model and take each user's
+   highest-scoring items that are *not* that user's known train positives
+   and *not* their held-out test item (`mine_hard_negatives` in `train.py`).
+   Mining the test item would train on the answer, so it is excluded.
+3. **Fine-tune on mixed negatives** — one softmax denominator containing
+   both the random/in-batch negatives and the mined hard negatives, with
+   `neg_mask` and `logQ` still active. Hard negatives are never used alone:
+   the highest-scoring "negatives" are exactly where unlabeled positives
+   hide, so a hard-only denominator could push real taste away.
+
+```bash
+python train.py --models twotower --hard-negatives   # v2 round, 5 fine-tune epochs
+python train.py --models twotower --hard-negatives --hard-epochs 3 --n-hard 10
+python evaluate.py                                   # same table, on the v2 artifact
+```
+
+**What does not change:** the flag is off by default, so plain
+`python train.py` trains exactly as before and reproduces the current
+measurements in `reports/evaluation.json`. Running with the flag overwrites
+`artifacts/twotower.pt` with the v2 model — re-run plain
+`python train.py --models twotower` to restore the default artifact.
+
+**Status — read before citing:** this v2 code was added 2026-10-25 and has
+*not* yet been studied or grill-passed by the repo owner. It is an opt-in
+experiment, not a resume claim: do not list hard negative mining as
+completed work until the owner has studied it under guidance and can defend
+it line by line. No v2 metric is quoted here, because none has been measured
+on a full training run yet — only a small smoke run proving the mining
+path executes.
 
 ## What the system does
 

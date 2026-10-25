@@ -4,6 +4,12 @@ Usage:
     python train.py                       # train all three models
     python train.py --models popularity   # only the popularity baseline
     python train.py --models mf,twotower  # only MF + two-tower
+    python train.py --models twotower --hard-negatives
+                                          # opt-in v2: normal two-tower
+                                          # training, then a hard-negative
+                                          # mining + fine-tune round
+                                          # (off by default; default
+                                          # training and metrics unchanged)
 
 Artifacts (saved under ./artifacts/, gitignored):
     dataset.pt     shared split + features + index maps
@@ -22,6 +28,7 @@ from collections import defaultdict
 import numpy as np
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from dataset import (
@@ -168,8 +175,95 @@ def inbatch_neg_mask(bu, bi, pos_padded, n_items):
     return mask
 
 
+def mine_hard_negatives(model, data, n_hard=10):
+    """Mine hard negatives from an already-trained two-tower model.
+
+    Why mine at all? Round-1 in-batch negatives are mostly "easy": random
+    items the model already scores low, so they teach almost nothing. The
+    items the trained model scores *highest* -- while the user never liked
+    them in training -- are the informative ones: pushing those down is
+    what sharpens the user/item boundary.
+
+    Why the exclusions matter: a mined item must be a negative, not a
+    mislabeled positive. Two things are therefore masked out before
+    ranking, both with -inf so they can never be mined:
+      * the user's known train positives (data["seen"]), and
+      * the user's held-out test item (data["test_u"] / data["test_i"]).
+    Mining the test item would train on the answer and make evaluation
+    dishonest; mining a train positive would be a false negative.
+
+    Returns (n_users, n_hard) LongTensor of mined item indices, one row
+    per user, highest-scoring first. Users who never appear in training
+    still get a row, but it is never used (the training loader only
+    contains train positives).
+    """
+    model.eval()
+    n_users, n_items = len(data["user_ids"]), len(data["item_ids"])
+    with torch.no_grad():
+        all_u = torch.arange(n_users)
+        u_all = model.encode_users(all_u, data["u_age"], data["u_gender"],
+                                   data["u_occ"])
+        all_i = torch.arange(n_items)
+        v_all = model.encode_items(all_i, data["i_genres"], data["i_year"])
+        scores = (u_all @ v_all.t()) / model.temperature  # (U, I)
+        scores[data["seen"]] = float("-inf")              # known positives
+        test_seen = torch.zeros(n_users, n_items, dtype=torch.bool)
+        test_seen[data["test_u"], data["test_i"]] = True
+        scores[test_seen] = float("-inf")                 # held-out answers
+        _, top = scores.topk(n_hard, dim=1)               # (U, n_hard)
+    return top
+
+
+def train_twotower_hard_round(model, opt, data, loader, pos_padded, logQ,
+                              hard_items, epochs, temperature, n_items):
+    """Fine-tune round: the same in-batch softmax, plus mined hard negatives.
+
+    Why mix instead of replacing? Hard negatives alone are dangerous: the
+    highest-scoring "negatives" are exactly where unlabeled positives hide,
+    so a hard-only denominator can teach the model to push real taste away.
+    Mixing keeps the broad random/in-batch negatives (coverage) and adds
+    the hard ones (fine distinctions) in one softmax denominator.
+
+    Why neg_mask and logQ stay on: nothing about mining fixes those two
+    biases. In-batch columns still get the known-positive mask and the
+    logQ popularity correction, and hard columns get the same treatment:
+    a mined item that is a known train positive is masked to -inf, and
+    each hard column's logit is corrected by its own logQ.
+    """
+    for ep in range(1, epochs + 1):
+        model.train()
+        total, n = 0.0, 0
+        for bu, bi in loader:
+            opt.zero_grad()
+            u = model.user_tower(bu, data["u_age"][bu], data["u_gender"][bu], data["u_occ"][bu])
+            v = model.item_tower(bi, data["i_genres"][bi], data["i_year"][bi])
+            # In-batch part: (B, B) logits, same as round 1.
+            logits = (u @ v.t()) / temperature - logQ[bi].unsqueeze(0)
+            mask = inbatch_neg_mask(bu, bi, pos_padded, n_items)
+            # Hard part: (B, n_hard) logits for this batch's mined items.
+            hard = hard_items[bu]                                   # (B, n_hard)
+            v_hard = model.item_tower(
+                hard.flatten(), data["i_genres"][hard.flatten()],
+                data["i_year"][hard.flatten()]).view(len(bu), -1, u.size(-1))
+            hard_logits = ((u.unsqueeze(1) * v_hard).sum(-1) / temperature
+                           - logQ[hard])
+            hard_mask = data["seen"][bu].gather(1, hard)            # (B, n_hard)
+            # One denominator: random/in-batch negatives + hard negatives.
+            all_logits = torch.cat([logits, hard_logits], dim=1)
+            all_mask = torch.cat([mask, hard_mask], dim=1)
+            all_logits = all_logits.masked_fill(all_mask, float("-inf"))
+            loss = F.cross_entropy(all_logits, torch.arange(len(bu)))
+            loss.backward()
+            opt.step()
+            total += loss.item() * len(bu)
+            n += len(bu)
+        print(f"[twotower-hard] epoch {ep:02d}/{epochs}  "
+              f"mixed_softmax={total / n:.4f}")
+
+
 def train_twotower(data, id_dim=32, out_dim=64, epochs=25, batch_size=1024,
-                   lr=5e-3, temperature=0.1):
+                   lr=5e-3, temperature=0.1, hard_negatives=False,
+                   hard_epochs=5, n_hard=10):
     set_seed()  # re-seed: this model's init must not depend on what ran before
     n_users, n_items = len(data["user_ids"]), len(data["item_ids"])
     loader = DataLoader(
@@ -203,6 +297,16 @@ def train_twotower(data, id_dim=32, out_dim=64, epochs=25, batch_size=1024,
             total += loss.item() * len(bu)
             n += len(bu)
         print(f"[twotower] epoch {ep:02d}/{epochs}  inbatch_softmax={total / n:.4f}")
+    if hard_negatives:
+        # v2 round (opt-in only; skipped entirely when the flag is off, so
+        # default training, artifacts, and metrics are unchanged):
+        # mine from the round-1 model, then fine-tune on mixed negatives.
+        print(f"[twotower-hard] mining {n_hard} hard negatives per user ...")
+        hard_items = mine_hard_negatives(model, data, n_hard=n_hard)
+        print(f"[twotower-hard] mined {hard_items.shape} "
+              f"(users x hard negatives per user)")
+        train_twotower_hard_round(model, opt, data, loader, pos_padded, logQ,
+                                  hard_items, hard_epochs, temperature, n_items)
     torch.save(
         {"state_dict": model.state_dict(), "id_dim": id_dim, "out_dim": out_dim,
          "temperature": temperature},
@@ -215,6 +319,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", default="popularity,mf,twotower",
                     help="comma-separated subset of {popularity,mf,twotower}")
+    ap.add_argument("--hard-negatives", action="store_true",
+                    help="opt-in v2 (two-tower only): after normal training, "
+                    "mine hard negatives from the trained model and fine-tune "
+                    "on mixed in-batch + hard negatives. Off by default; "
+                    "when off, training and metrics are unchanged.")
+    ap.add_argument("--hard-epochs", type=int, default=5,
+                    help="epochs for the hard-negative fine-tune round "
+                    "(only used with --hard-negatives)")
+    ap.add_argument("--n-hard", type=int, default=10,
+                    help="hard negatives mined per user "
+                    "(only used with --hard-negatives)")
     args = ap.parse_args()
     which = {m.strip() for m in args.models.split(",")}
 
@@ -225,7 +340,8 @@ def main():
     if "mf" in which:
         train_mf(data)
     if "twotower" in which:
-        train_twotower(data)
+        train_twotower(data, hard_negatives=args.hard_negatives,
+                       hard_epochs=args.hard_epochs, n_hard=args.n_hard)
     print("[done] artifacts in", ART_DIR)
 
 
